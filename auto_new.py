@@ -114,31 +114,39 @@ def create_fabstring(host=None, user='user', password='password'):
 # checking the output and error streams. For anything that's
 # there in the error stream, it can be parsed incrementally
 # over time.
-def run_func(func_name, host_num, rt_dict, host=None, fs=None):
-    # for each host start a separate subprocess and store
+# BUG: paramiko apparently doesn't check if the password is incorrect
+#          and keeps trying to connect infinitely. Must be careful.
+#          I think fabric has to pass the number of retries to paramiko
+#          And it doesn't handle incorrect password. Yay!
+def run_func(func_name, host_num, rt_dict, user_pass, host, fs):
+    # A fabstring is created here for each function. This is not
+    # really desired behaviour.
+    #
+    # For each host start a separate subprocess and store
     # the output. This code however will not do
-    if (not host) or (not fs):
-        print("No fabric functions defined. Please check the program invocation. The program will exit.")
-        sys.exit()
-    else:
-        print("Running " + func_name + " on " + host)
-        # pdb.set_trace()
-        fabstring = create_fabstring('[\'' + host + '\']')
-        fabstring += fs
-        fname = 'temp_' + host.replace('.', '_') + '.py'
-        with open(fname, 'w') as f:
-            f.write(fabstring)
+    # splitting on functions. Finding func and then reconstructing.
+    username, password = user_pass.strip().split(',')
 
-        p = Popen(['fab', '-D', '-f', fname, func_name], stdout=PIPE, stderr=PIPE)
-        output, err = p.communicate()
-        out = output.decode('utf-8')
-        err = err.decode('utf-8')
-        rc = p.returncode
-        # store in a dict and put in separate locations
-        rt_dict[host_num] = [host, out, err, rc]
-        os.remove(fname)
-        if os.path.exists(fname + 'c'):
-            os.remove(fname + 'c')
+    funcs_list = fs.split('def')
+    func_string = 'def' + [i for i in funcs_list if i.startswith(" " + func_name)][0] + "\n    run('exit')"
+
+    print("Running " + func_name + " on " + host)
+    fabstring = create_fabstring('[\'' + host + '\']', username, password)
+    fabstring += func_string
+    fname = 'temp_' + host.replace('.', '_') + '.py'
+    with open(fname, 'w') as f:
+        f.write(fabstring)
+
+    p = Popen(['fab', '-D', '-f', fname, func_name], stdout=PIPE, stderr=PIPE)
+    output, err = p.communicate()
+    out = output.decode('utf-8')
+    err = err.decode('utf-8')
+    rc = p.returncode
+    # store in a dict and put in separate locations
+    rt_dict[host_num] = [host, out, err, rc]
+    os.remove(fname)
+    if os.path.exists(fname + 'c'):
+        os.remove(fname + 'c')
 
     return
 
@@ -151,16 +159,30 @@ def get_hosts_ips(macs_file, cols):
     return ips, awake_host_nums, hosts_ips
 
 
-def run_all(func, fs, host_nums, ips, rt, timeout):
+def run_on_all(func, fs, host_nums, ips, rt, user_password, threaded, timeout):
     rt = {}
-    thread_list = [Thread(target=run_func, args=(func, host_num, rt),
-                          kwargs={'host': ip, 'fs': fs})
-                   for host_num, ip in zip(host_nums, ips)]
+    if threaded:
+        thread_list = [Thread(target=run_func, args=(func, host_num, rt, user_password),
+                              kwargs={'host': ip, 'fs': fs})
+                       for host_num, ip in zip(host_nums, ips)]
 
-    for thread in thread_list:
-        thread.start()
-    for thread in thread_list:
-        thread.join(timeout=timeout)
+        for thread in thread_list:
+            thread.start()
+        ### DEBUG ###
+        print("Started threads")
+        print("Function is " + func)
+        ### END DEBUG ###    
+
+        for thread in thread_list:
+            thread.join(timeout=timeout)
+
+        ### DEBUG ###
+        print("Joined threads")
+        ### END DEBUG ###    
+    else:
+        for host_num, ip in zip(host_nums, ips):
+            run_func(func, host_num, rt, user_password, host=ip, fs=fs)
+
     return rt
 
 
@@ -177,14 +199,14 @@ def install_stuff():
     sudo('dpkg -i /tmp/fab_tmp/*.deb')
     sudo('rm /tmp/fab_tmp')
 """
-    rt = run_all('get_uris', fs, ips, 10)
+    rt = run_on_all('get_uris', fs, ips, 10)
     pat = re.compile('http.*?deb')
     urls = [set(pat.findall(v[0])) for v in rt.values()]
     urls = set.union(*urls)
     # with the assumption that all the ips are alive and accessible
     # And that the current system is synced with the rest w.r.t. packages
     download_stuff(urls)
-    run_all('install_stuff', fs, ips, timeout=timeout)
+    run_on_all('install_stuff', fs, ips, timeout=timeout)
 
 
 def download_stuff(urls):
@@ -195,9 +217,14 @@ def download_stuff(urls):
 
 
 def do_stuff(macs_file, cols, funcs,
-             host_nums, hosts_ips, ips, run_funcs, timeout=60, wake=False):
+             host_nums, hosts_ips, ips, run_funcs, user_password, threaded, timeout=60):
     ips_hosts = dict([(v, k) for k, v in hosts_ips.items()])
     ips = [ip for ip in ips if hosts_ips[ip] in host_nums]
+
+    ### DEBUG ###
+    print("inside do_stuff running on " + str(ips))
+    ### END DEBUG ###
+
     fs = funcs
     fs += '''
 def test():
@@ -229,7 +256,11 @@ def check_chrome():
     rt_list = []
     for func in run_funcs:
         rt = {}
-        rt_list.append(run_all(func, fs, host_nums, ips, rt, timeout))
+        rt_list.append(run_on_all(func, fs, host_nums, ips, rt, user_password, threaded, timeout))
+
+    ### DEBUG ###
+    print("Ran all")
+    ### END DEBUG ###    
 
     for i, rt in enumerate(rt_list):
         for k, v in rt.items():
@@ -252,6 +283,8 @@ def main():
         specified via --columns.  Rest of the configuration has to be
         there in the config file (feature to be added later).  '''
     )
+    parser.add_argument('--config-file', type=str,
+                        help='A config file which may contain the values to options')
     parser.add_argument('--macs-file', '-m', type=str, default='all_macs_sorted.csv',
                         help='the csv file containing the mac addresses')
     parser.add_argument('--columns', '-c', type=str, default='1,2',
@@ -268,6 +301,10 @@ def main():
                         help='Comma separated list of functions to run')
     parser.add_argument('--timeout', '-t', type=int, default=60,
                         help='Comma separated list of functions to run')
+    parser.add_argument('--user', type=str, default='',
+                        help='Comma separated list of user/password e.g. root,r00tme')
+    parser.add_argument('--threaded', type=bool, default=True,
+                        help='execute each function for each host in a separate thread')
     args = parser.parse_args()
 
     cols = list(map(int, args.columns.split(',')))
@@ -275,9 +312,16 @@ def main():
         print("No macs file specified. The program will exit.")
         sys.exit()
 
+    if args.wake_hosts:
+        print("Sending wake packets and waiting...")
+        wake_hosts(args.macs_file, cols, args.host_nums if args.host_nums else None)
+        time.sleep(60)
+
     ips, awake_host_nums, hosts_ips = get_hosts_ips(args.macs_file, cols)
+    ips_hosts = dict([(v, k) for k, v in hosts_ips.items()])
     if args.print_hosts:
         print("Total " + str(len(awake_host_nums)) + " systems are awake\n", awake_host_nums)
+        print("With ip addresses " + str(hosts_ips))
 
     if args.host_nums:
         host_nums = args.host_nums.split(',')
@@ -302,17 +346,26 @@ def main():
     
     if run_funcs:
         print("Trying to run on ", host_nums)
-        print("With ips ", hosts_ips)
-        print(len(awake_host_nums), " systems")
+        print("With ips ", [ips_hosts[k] for k in host_nums])
+        print(len(awake_host_nums), " systems are online")
         hi, rt = do_stuff(args.macs_file, cols, funcs,
-                          host_nums, hosts_ips, ips, run_funcs,
-                          timeout=args.timeout, wake=args.wake_hosts)
+                          host_nums, hosts_ips, ips, run_funcs, args.user,
+                          args.threaded, timeout=args.timeout)
+
+        ### DEBUG ###
+        print("Did stuff")
+        ### END DEBUG ###    
+
         # with open('rt.pkl', 'wb') as f:
         #     pickle.dump(rt, f)
         with open('rt.json', 'w') as f:
             json.dump(rt, f)
-    sys.exit()
 
+    ### DEBUG ###
+    print("Why the fuck is it not exiting?")
+    ### END DEBUG ###    
+
+    return
 
 if __name__ == "__main__":
     main()
