@@ -23,7 +23,7 @@ def wake_hosts(macs_list, cols, host_nums=None):
             if row[cols[0]] and row[cols[1]] and row[3] != 'v':
                 systems.append(row)
                 macs.append(row[cols[0]])
-                sys_nums.append(int(row[cols[1]]))
+                sys_nums.append(row[cols[1]])
 
     statuses = []
     print(list(zip(sys_nums, macs)), host_nums)
@@ -47,14 +47,14 @@ def get_hosts(macs_list, cols):
 
     systems = []
     macs = []
-    sys_nums = []
+    sys_names = []
     with open(macs_list, 'r') as f:
         reader = csv.reader(f, delimiter=',')
         for row in reader:
             if row[cols[0]] and row[cols[1]]:
-                systems.append([row[cols[0]].strip(), int(row[cols[1]])])
+                systems.append([row[cols[0]].strip(), row[cols[1]]])
                 macs.append(row[cols[0]].strip())
-                sys_nums.append(int(row[cols[1]]))
+                sys_names.append(row[cols[1]])
 
     meh = dict(systems)
 
@@ -72,15 +72,15 @@ def get_hosts(macs_list, cols):
     for i in hosts:
         if i[1] in meh.keys():
             hosts_alive.append(i + [meh[i[1]]])
-    hosts_alive.sort(key=lambda x: int(x[2]))
+    hosts_alive.sort(key=lambda x: x[2])
 
     total_hosts_not_alive = range(1, 68)
     bleh = []
     for i in hosts_alive:
-        bleh.append(int(i[2]))
+        bleh.append(i[2])
 
     total_hosts_not_alive = set(total_hosts_not_alive) - set(bleh)
-    hosts_not_alive = set(sys_nums) - set(bleh)
+    hosts_not_alive = set(sys_names) - set(bleh)
 
     return hosts_alive, hosts_not_alive, total_hosts_not_alive
 
@@ -291,7 +291,7 @@ def main():
                         help='Read from this config file for the application')
     parser.add_argument('--funcs-file', '-f', type=str, default='',
                         help='A file containing the function definitions')
-    parser.add_argument('--host-nums', '-n', type=str, default='',
+    parser.add_argument('--host-names', '-n', type=str, default='',
                         help='Comma separated numbers of systems')
     parser.add_argument('--wake-hosts', '-w', type=bool, default=False,
                         help='Wake the hosts?')
@@ -314,24 +314,24 @@ def main():
 
     if args.wake_hosts:
         print("Sending wake packets and waiting...")
-        wake_hosts(args.macs_file, cols, args.host_nums if args.host_nums else None)
+        wake_hosts(args.macs_file, cols, args.host_names if args.host_host_names else None)
         time.sleep(60)
 
-    ips, awake_host_nums, hosts_ips = get_hosts_ips(args.macs_file, cols)
+    ips, awake_host_names, hosts_ips = get_hosts_ips(args.macs_file, cols)
     ips_hosts = dict([(v, k) for k, v in hosts_ips.items()])
     if args.print_hosts:
-        print("Total " + str(len(awake_host_nums)) + " systems are awake\n", awake_host_nums)
+        print("Total " + str(len(awake_host_names)) + " systems are awake\n", awake_host_names)
         print("With ip addresses " + str(hosts_ips))
 
-    if args.host_nums:
-        host_nums = args.host_nums.split(',')
-        host_nums = [int(h.strip()) for h in host_nums]
-        if set(host_nums) - set(awake_host_nums):
-            print(str(set(awake_host_nums) - set(host_nums))
+    if args.host_names:
+        host_names = args.host_names.split(',')
+        host_names = [h.strip() for h in host_names]
+        if set(host_names) - set(awake_host_names):
+            print(str(set(awake_host_names) - set(host_names))
                   + " hosts are not awake")
-        host_nums = set.intersection(set(host_nums), set(awake_host_nums))
+        host_names = set.intersection(set(host_names), set(awake_host_names))
     else:
-        host_nums = awake_host_nums
+        host_names = awake_host_names
 
     if args.funcs_file:
         with open(args.funcs_file, 'r') as f:
@@ -343,13 +343,13 @@ def main():
         run_funcs = [r.strip() for r in args.run_funcs.split(',')]
     else:
         run_funcs = None
-    
+
     if run_funcs:
-        print("Trying to run on ", host_nums)
-        print("With ips ", [ips_hosts[k] for k in host_nums])
-        print(len(awake_host_nums), " systems are online")
+        print("Trying to run on ", host_names)
+        print("With ips ", [ips_hosts[k] for k in host_names])
+        print(len(awake_host_names), " systems are online")
         hi, rt = do_stuff(args.macs_file, cols, funcs,
-                          host_nums, hosts_ips, ips, run_funcs, args.user,
+                          host_names, hosts_ips, ips, run_funcs, args.user,
                           args.threaded, timeout=args.timeout)
 
         ### DEBUG ###
